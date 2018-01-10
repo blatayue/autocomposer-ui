@@ -1,0 +1,1724 @@
+[
+  {
+    "__docId__": 0,
+    "kind": "file",
+    "name": "src/app-main.js",
+    "content": "const React = require('react');\nconst ReactDOM = require('react-dom');\nconst moment = require('moment');\n\nvar AutoComposer = require('../node_modules/autocomposer-js/src/browser-build.js');\n\nvar AcButton = require('./react/ac-button');\nvar AcToggleButton = require('./react/ac-toggle-button');\nvar AcTextArea = require('./react/ac-textarea');\nvar StatusOutput = require('./react/status-output')\n\nvar HelpPanel = require('./react/help-panel');\nvar DebugPanel = require('./react/debug-panel');\nvar OutputPanel = require('./react/output-panel');\nvar ControlPanel = require('./react/control-panel');\n\n\nfunction AcInputException(message) {\n   this.message = message;\n   this.name = 'AcInputException';\n}\n\n\n/**\n* The core React component for the web app.\n*/\nclass AutoComposerApp extends React.Component {\n  constructor(props) {\n    super(props);\n\n    /**\n    * @type {Object} - Data store. Any changes to this data store will not cause an update.\n    */\n    this.store = {\n      melodies: [],\n      chordProgressionClean: \"\",\n      chordProgressionPlaceholder: \"example: Gm E C D\",\n      RESPONSIVE_BREAKPOINT_PHONE: 500,\n      RESPONSIVE_BREAKPOINT_TABLET: 768\n    };\n\n    /**\n    * @type {Object} - Component state. Changes to this will eventually trigger a render.\n    */\n    this.state = {\n      showHelp: false,\n      showControls: false,\n      showOutput: false,\n\n      debugMode: false,\n      controlsDisabled: true, // While this is a mess, no need to show it.\n\n      chordProgressionRaw: \"\",\n      chordProgressionChanged: false,\n\n      // This becomes true whenever we have a chord progression change, and the correct button is clicked.\n      // Returns to false after output finishes rendering\n      allowMelodyGeneration: \"\",\n      melodyLoaded: false,\n\n      isOnSupportedDevice: this._isOnSupportedDevice(),\n      isOnTablet: this._isOnTablet()\n    };\n\n    this.handleChange = this.handleChange.bind(this);\n    this.generateMelodies = this.generateMelodies.bind(this);\n    this.outputFinishCallback = this.outputFinishCallback.bind(this);\n    this.callbackChangeState = this.callbackChangeState.bind(this);\n    this._resizeHandler = this._resizeHandler.bind(this);\n    this.loadMusic = this.loadMusic.bind(this);\n\n    this.playMelody = this.playMelody.bind(this);\n    this.playMelodySolo = this.playMelodySolo.bind(this);\n    this.stopMusic = this.stopMusic.bind(this);\n    this.downloadMidi = this.downloadMidi.bind(this);\n  }\n\n  /**\n  * Checks the device/browser. Returns true if the browser is supported.\n  * Expected to run on loading the app.\n  */\n  _isOnSupportedDevice() {\n    var ua = navigator.userAgent;\n    // trident = IE rendering engine. IE does not support the class JS keyword. Which is all over this codebase.\n    var isSupportedDevice = ua.search(/trident/i) == -1;\n    return isSupportedDevice;\n  }\n\n  /**\n  * Checks to see if the app should use a Tablet layout.\n  * Expected to run on loading the app, and when it resizes\n  */\n  _isOnTablet() {\n    if(window.innerWidth > this.store.RESPONSIVE_BREAKPOINT_PHONE && window.innerWidth <= this.store.RESPONSIVE_BREAKPOINT_TABLET) {\n      return true;\n    } else {\n      return false\n    }\n  }\n\n  /**\n  * Handler for browser resize event.\n  */\n  _resizeHandler() {\n    if(this._isOnTablet() && !this.state.isOnTablet) {\n      // state transition: non-tablet VW to a tablet VW\n      this.setState({isOnTablet: true});\n    } else if (!this._isOnTablet() && this.state.isOnTablet) {\n      // state transition: tablet VW to a non-tablet VW\n      this.setState({isOnTablet: false});\n    }\n  }\n\n  /**\n  * Add event listener\n  */\n  componentDidMount() {\n    window.addEventListener(\"resize\", this._resizeHandler);\n  }\n\n  /**\n  * Remove event listener\n  */\n  componentWillUnmount() {\n    window.removeEventListener(\"resize\", this._resizeHandler);\n  }\n\n  _sendStatusUpdate(message) {\n    var updateEvent = new CustomEvent('statusUpdate', {detail: message});\n    document.body.dispatchEvent(updateEvent);\n  }\n\n  /**\n  * Changes app state. Meant to be called from child components\n  * @param {string} stateKey - App state to change\n  * @param {number|string|Object} newState - Assigns this to the state\n  * @param {boolean} [useDataStore] - If true, the data store is changed instead of the state object.\n  */\n  callbackChangeState(stateKey, newState, useDataStore) {\n    console.debug(\"app, callbackChangeState(\" + stateKey + \", \" + newState + \", \" + useDataStore + \")\");\n    if(useDataStore) {\n      this.store[stateKey] = newState;\n    } else {\n      var stateObj = function() {\n        var returnObj = {};\n\n        returnObj[stateKey] = newState;\n\n        return returnObj;\n      }.bind(this)();\n\n      this.setState(stateObj);\n    }\n  }\n\n  /**\n  * Changes app state. Meant to be called from child components.\n  * Older function, compared to callbackChangeState()\n  * @param {Object} event - React event\n  */\n  handleChange(event) {\n    var stateObj = function() {\n      var stateKey = this.target.dataset[\"stateKey\"];\n      var returnObj = {};\n\n      if(this.target.type === \"checkbox\") {\n        returnObj[stateKey] = this.target.checked;\n      } else if(this.target.type === \"button\") {\n        returnObj[stateKey] = this.target.dataset[\"currentState\"] === \"true\";\n      } else {\n        returnObj[stateKey] = this.target.value;\n\n        if(stateKey === \"chordProgressionRaw\") {\n          returnObj[\"chordProgressionChanged\"] = true;\n        }\n      }\n\n      return returnObj;\n    }.bind(event)();\n\n    this.setState(stateObj);\n  }\n\n  /**\n  * Loads melody data into the App. Meant to be used as a callback from the results table.\n  * @param {Object} event - React event\n  */\n  loadMusic(event) {\n    var melodyString = event.currentTarget.dataset[\"payload\"];\n    var melodiesData = melodyString.split(\";\");\n\n    var melody1 = melodiesData[0].split(\",\");\n    var melody2 = melodiesData[1].split(\",\");\n    var melody3 = melodiesData[2].split(\",\");\n\n    var melodies = [melody1, melody2, melody3];\n    this.store.melodies = melodies;\n    this.setState({melodyLoaded: true});\n\n    var newSelectionEvent = new Event(\"newSelection\");\n    document.body.dispatchEvent(newSelectionEvent);\n  }\n\n  /**\n  * Generates the melodies for the given chord progression.\n  * @param {Object} event - React event\n  */\n  generateMelodies(event) {\n    var chordProgression = this.state.chordProgressionRaw.trim().split(\" \");\n\n    if(!this.state.chordProgressionChanged || this.state.chordProgressionRaw.trim() === this.store.chordProgressionClean) {\n      // Chord progression hasn't changed. No need to continue.\n      console.debug(\"[AutoComposer.generateMelodies()] Chord progression hasn't changed. No generation for you.\");\n      return;\n    }\n\n    this.store.chordProgressionClean = this.state.chordProgressionRaw.trim();\n\n    try {\n      if(this.state.chordProgressionRaw == null || this.state.chordProgressionRaw == \"\") {\n        throw new AcInputException('Chord input is empty!');\n      }\n\n      chordProgression.forEach(function(currentChordInput) {\n        if(!AutoComposer.logic.isValidText(currentChordInput)) {\n          throw new AcInputException('Chord input \\'' + currentChordInput + '\\' is not formatted properly! You should check the chord dictionary in the Help! section.');\n        }\n      });\n\n      if(chordProgression.length < 2) {\n        throw new AcInputException('You need to enter more chords. Two chords in a row is a completely valid input.');\n      }\n\n      this._sendStatusUpdate(\"Generating melodies...\");\n      this.setState({showOutput: true, allowMelodyGeneration: true, melodyLoaded: false, showHelp: false});\n      this.store.melodies = [];\n\n\n      var newSelectionEvent = new Event(\"newSelection\");\n      document.body.dispatchEvent(newSelectionEvent);\n    } catch(exc) {\n      console.warn(\"[AutoComposer.generateMelodies()] \" + exc.message + \"\\nError Type = \" + exc.name);\n      this._sendStatusUpdate(\"[ERROR] \" + exc.message);\n    }\n  }\n\n  /**\n  * Plays the loaded melody\n  * @param {Object} event - React event\n  */\n  playMelody(event) {\n    if(this.store.melodies.length > 0) {\n      AutoComposer.midiPlayer.playMelodyWithAccompaniment(this.store.melodies[0], this.store.melodies[1], this.store.melodies[2]);\n    }\n  }\n\n  /**\n  * Plays the loaded melody by itself\n  * @param {Object} event - React event\n  */\n  playMelodySolo(event) {\n    if(this.store.melodies.length > 0) {\n      AutoComposer.midiPlayer.playMelodySolo(this.store.melodies[0]);\n    }\n  }\n\n  /**\n  * Stops all music currently playing.\n  * @param {Object} event - React event\n  */\n  stopMusic(event) {\n    AutoComposer.midiPlayer.stopPlayback();\n  }\n\n  /**\n  * Creates and sends MIDI data to the user.\n  * @param {Object} event - React event\n  */\n  downloadMidi(event) {\n    if(this.store.melodies.length > 0) {\n      //download MIDI file\n      var dataString = AutoComposer.midiWriter.buildMelodyMidiWithAccompaniment(this.store.melodies[0], this.store.melodies[1], this.store.melodies[2]);\n      var timestamp = moment().format(\"YYMMDDHHmmss\");\n      var fileName = \"autocomposer_\" + timestamp + \"_\" + this.state.chordProgressionRaw.replace(/\\s+/g, \"-\");\n      download(dataString, fileName, \"audio/midi\");\n    }\n  }\n\n  /**\n  * Callback that runs when output panel is finished rendering.\n  * Prevents melody generation until the user enters a new progression.\n  * @param {Object} event - React event\n  */\n  outputFinishCallback() {\n    this.setState({allowMelodyGeneration: false, chordProgressionChanged: false});\n  }\n\n  render() {\n    var chordProgressionArray = this.store.chordProgressionClean.split(\" \");\n    var rootLayoutClass = \"root-panel\";\n    rootLayoutClass += this.state.isOnTablet ? \" layout-tablet\" : \" layout-non-tablet\";\n\n    if(this.state.isOnSupportedDevice) {\n      return (\n        <div id=\"app-container\" className={rootLayoutClass}>\n          <div id=\"main-control-panel\" className=\"ac-panel\">\n\n            <div className=\"panel-row\">\n              <div className=\"ac-control-wrapper flex-lg\">\n                <h1 id=\"main-title\">AutoComposer</h1>\n              </div>\n              <AcToggleButton inputKey=\"showHelp\" icon=\"question\" addClass=\"blue\" wrapperAddClass=\"flex-md\" isActive={this.state.showHelp} onClickHandler={this.callbackChangeState} />\n            </div>\n\n            <div className=\"panel-row\">\n              <p id=\"main-blurb\">\n                This is a prototype for a program that automatically writes music. Click the <i className=\"fa fa-question\"></i> button to get started.\n                For more info, check out the <a href=\"https://github.com/rjsalvadorr/autocomposer-js/wiki\" target=\"_blank\">project wiki</a> and <a href=\"https://github.com/rjsalvadorr/autocomposer-js\" target=\"_blank\">repository</a>.\n              </p>\n            </div>\n\n            <div className=\"panel-row has-labels\">\n              <AcTextArea inputKey=\"chordProgressionRaw\" addClass=\"double-height\" value={this.state.chordProgressionRaw} placeholder={this.store.chordProgressionPlaceholder} onChange={this.handleChange} />\n              <AcButton inputKey=\"generateMelodies\" inputLabel=\"Generate\" wrapperAddClass=\"square\" addClass=\"double-height blue\" onClick={this.generateMelodies} isActive={!this.state.chordProgressionChanged}/>\n            </div>\n\n            <div className=\"panel-row\">\n              <AcButton inputKey=\"generateMelodies\" icon=\"play\" addClass=\"green\" wrapperAddClass=\"flex-lg\" onClick={this.playMelody} disabled={!this.state.melodyLoaded}/>\n              <AcButton inputKey=\"generateMelodies\" icon=\"play\" addClass=\"green\" inputLabel=\"Solo\" wrapperAddClass=\"flex-sm\" onClick={this.playMelodySolo} disabled={!this.state.melodyLoaded}/>\n              <AcButton inputKey=\"generateMelodies\" icon=\"stop\" addClass=\"red\" wrapperAddClass=\"flex-sm\" onClick={this.stopMusic} disabled={!this.state.melodyLoaded}/>\n              <AcButton inputKey=\"generateMelodies\" icon=\"download\" addClass=\"blue\" inputLabel=\"MIDI\" wrapperAddClass=\"flex-sm\" onClick={this.downloadMidi} disabled={!this.state.melodyLoaded}/>\n            </div>\n\n            <div className=\"panel-row\">\n              <StatusOutput inputKey=\"status-output\" value=\"status output...\" />\n            </div>\n\n            <DebugPanel isHidden={!this.state.debugMode} debugData={JSON.stringify(this.state, null, 2)}/>\n          </div>\n\n          <ControlPanel isShown={this.state.showControls} />\n\n          <HelpPanel isShown={this.state.showHelp} closeFunction={this.callbackChangeState}/>\n\n          <OutputPanel isShown={this.state.showOutput} chordProgression={chordProgressionArray} allowMelodyGeneration={this.state.allowMelodyGeneration} outputCallback={this.outputFinishCallback} loadMelody={this.loadMusic} />\n\n          <div id=\"not-supported-panel\" className=\"ac-panel\">\n            <h1>Where's the AutoComposer?!</h1>\n            <p>You're seeing this page because your device isn't supported by the app's scripts, or your browser's window size is too small.</p>\n            <p>If you're on a phone/tablet, try turning it to see this page in landscape!</p>\n          </div>\n\n        </div>\n      );\n    } else {\n      return (\n        <div id=\"app-container\" className=\"root-panel\">\n          <div id=\"not-supported-panel\" className=\"ac-panel\">\n            <h1>Where's the AutoComposer?!</h1>\n            <p>You're seeing this page because your device isn't supported by the app's scripts, or your browser's window size is too small.</p>\n            <p>If you're on a phone/tablet, try turning it to see this page in landscape!</p>\n          </div>\n        </div>\n      );\n    }\n  }\n}\n\nReactDOM.render(<AutoComposerApp />, document.getElementById('react-root'));\n",
+    "static": true,
+    "longname": "src/app-main.js",
+    "access": null,
+    "description": null,
+    "lineNumber": 1
+  },
+  {
+    "__docId__": 1,
+    "kind": "variable",
+    "name": "React",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~React",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 1,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 2,
+    "kind": "variable",
+    "name": "ReactDOM",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~ReactDOM",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 2,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 3,
+    "kind": "variable",
+    "name": "moment",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~moment",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 3,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 4,
+    "kind": "variable",
+    "name": "AutoComposer",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~AutoComposer",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 5,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 5,
+    "kind": "variable",
+    "name": "AcButton",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~AcButton",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 7,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 6,
+    "kind": "variable",
+    "name": "AcToggleButton",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~AcToggleButton",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 8,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 7,
+    "kind": "variable",
+    "name": "AcTextArea",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~AcTextArea",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 9,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 8,
+    "kind": "variable",
+    "name": "StatusOutput",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~StatusOutput",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 10,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 9,
+    "kind": "variable",
+    "name": "HelpPanel",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~HelpPanel",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 12,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 10,
+    "kind": "variable",
+    "name": "DebugPanel",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~DebugPanel",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 13,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 11,
+    "kind": "variable",
+    "name": "OutputPanel",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~OutputPanel",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 14,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 12,
+    "kind": "variable",
+    "name": "ControlPanel",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~ControlPanel",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 15,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 13,
+    "kind": "function",
+    "name": "AcInputException",
+    "memberof": "src/app-main.js",
+    "generator": false,
+    "async": false,
+    "static": true,
+    "longname": "src/app-main.js~AcInputException",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": null,
+    "lineNumber": 18,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "params": [
+      {
+        "name": "message",
+        "types": [
+          "*"
+        ]
+      }
+    ]
+  },
+  {
+    "__docId__": 14,
+    "kind": "class",
+    "name": "AutoComposerApp",
+    "memberof": "src/app-main.js",
+    "static": true,
+    "longname": "src/app-main.js~AutoComposerApp",
+    "access": null,
+    "export": false,
+    "importPath": "autocomposer-us/src/app-main.js",
+    "importStyle": null,
+    "description": "The core React component for the web app.",
+    "lineNumber": 27,
+    "interface": false,
+    "extends": [
+      "React~React.Component"
+    ]
+  },
+  {
+    "__docId__": 15,
+    "kind": "constructor",
+    "name": "constructor",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#constructor",
+    "access": null,
+    "description": null,
+    "lineNumber": 28,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "params": [
+      {
+        "name": "props",
+        "types": [
+          "*"
+        ]
+      }
+    ]
+  },
+  {
+    "__docId__": 16,
+    "kind": "member",
+    "name": "store",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#store",
+    "access": null,
+    "description": "",
+    "lineNumber": 34,
+    "type": {
+      "nullable": null,
+      "types": [
+        "Object"
+      ],
+      "spread": false,
+      "description": null
+    }
+  },
+  {
+    "__docId__": 17,
+    "kind": "member",
+    "name": "state",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#state",
+    "access": null,
+    "description": "",
+    "lineNumber": 45,
+    "type": {
+      "nullable": null,
+      "types": [
+        "Object"
+      ],
+      "spread": false,
+      "description": null
+    }
+  },
+  {
+    "__docId__": 18,
+    "kind": "member",
+    "name": "handleChange",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#handleChange",
+    "access": null,
+    "description": null,
+    "lineNumber": 65,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 19,
+    "kind": "member",
+    "name": "generateMelodies",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#generateMelodies",
+    "access": null,
+    "description": null,
+    "lineNumber": 66,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 20,
+    "kind": "member",
+    "name": "outputFinishCallback",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#outputFinishCallback",
+    "access": null,
+    "description": null,
+    "lineNumber": 67,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 21,
+    "kind": "member",
+    "name": "callbackChangeState",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#callbackChangeState",
+    "access": null,
+    "description": null,
+    "lineNumber": 68,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 22,
+    "kind": "member",
+    "name": "_resizeHandler",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#_resizeHandler",
+    "access": null,
+    "description": null,
+    "lineNumber": 69,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 23,
+    "kind": "member",
+    "name": "loadMusic",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#loadMusic",
+    "access": null,
+    "description": null,
+    "lineNumber": 70,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 24,
+    "kind": "member",
+    "name": "playMelody",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#playMelody",
+    "access": null,
+    "description": null,
+    "lineNumber": 72,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 25,
+    "kind": "member",
+    "name": "playMelodySolo",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#playMelodySolo",
+    "access": null,
+    "description": null,
+    "lineNumber": 73,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 26,
+    "kind": "member",
+    "name": "stopMusic",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#stopMusic",
+    "access": null,
+    "description": null,
+    "lineNumber": 74,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 27,
+    "kind": "member",
+    "name": "downloadMidi",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#downloadMidi",
+    "access": null,
+    "description": null,
+    "lineNumber": 75,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "type": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 28,
+    "kind": "method",
+    "name": "_isOnSupportedDevice",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#_isOnSupportedDevice",
+    "access": null,
+    "description": "Checks the device/browser. Returns true if the browser is supported.\nExpected to run on loading the app.",
+    "lineNumber": 82,
+    "params": [],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 29,
+    "kind": "method",
+    "name": "_isOnTablet",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#_isOnTablet",
+    "access": null,
+    "description": "Checks to see if the app should use a Tablet layout.\nExpected to run on loading the app, and when it resizes",
+    "lineNumber": 93,
+    "params": [],
+    "return": {
+      "types": [
+        "boolean"
+      ]
+    }
+  },
+  {
+    "__docId__": 30,
+    "kind": "method",
+    "name": "_resizeHandler",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#_resizeHandler",
+    "access": null,
+    "description": "Handler for browser resize event.",
+    "lineNumber": 104,
+    "params": []
+  },
+  {
+    "__docId__": 31,
+    "kind": "method",
+    "name": "componentDidMount",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#componentDidMount",
+    "access": null,
+    "description": "Add event listener",
+    "lineNumber": 117,
+    "params": []
+  },
+  {
+    "__docId__": 32,
+    "kind": "method",
+    "name": "componentWillUnmount",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#componentWillUnmount",
+    "access": null,
+    "description": "Remove event listener",
+    "lineNumber": 124,
+    "params": []
+  },
+  {
+    "__docId__": 33,
+    "kind": "method",
+    "name": "_sendStatusUpdate",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#_sendStatusUpdate",
+    "access": null,
+    "description": null,
+    "lineNumber": 128,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "params": [
+      {
+        "name": "message",
+        "types": [
+          "*"
+        ]
+      }
+    ]
+  },
+  {
+    "__docId__": 34,
+    "kind": "method",
+    "name": "callbackChangeState",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#callbackChangeState",
+    "access": null,
+    "description": "Changes app state. Meant to be called from child components",
+    "lineNumber": 139,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "string"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "stateKey",
+        "description": "App state to change"
+      },
+      {
+        "nullable": null,
+        "types": [
+          "number",
+          "string",
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "newState",
+        "description": "Assigns this to the state"
+      },
+      {
+        "nullable": null,
+        "types": [
+          "boolean"
+        ],
+        "spread": false,
+        "optional": true,
+        "name": "useDataStore",
+        "description": "If true, the data store is changed instead of the state object."
+      }
+    ]
+  },
+  {
+    "__docId__": 35,
+    "kind": "method",
+    "name": "handleChange",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#handleChange",
+    "access": null,
+    "description": "Changes app state. Meant to be called from child components.\nOlder function, compared to callbackChangeState()",
+    "lineNumber": 161,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 36,
+    "kind": "method",
+    "name": "loadMusic",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#loadMusic",
+    "access": null,
+    "description": "Loads melody data into the App. Meant to be used as a callback from the results table.",
+    "lineNumber": 188,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 37,
+    "kind": "method",
+    "name": "generateMelodies",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#generateMelodies",
+    "access": null,
+    "description": "Generates the melodies for the given chord progression.",
+    "lineNumber": 208,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 38,
+    "kind": "method",
+    "name": "playMelody",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#playMelody",
+    "access": null,
+    "description": "Plays the loaded melody",
+    "lineNumber": 251,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 39,
+    "kind": "method",
+    "name": "playMelodySolo",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#playMelodySolo",
+    "access": null,
+    "description": "Plays the loaded melody by itself",
+    "lineNumber": 261,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 40,
+    "kind": "method",
+    "name": "stopMusic",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#stopMusic",
+    "access": null,
+    "description": "Stops all music currently playing.",
+    "lineNumber": 271,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 41,
+    "kind": "method",
+    "name": "downloadMidi",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#downloadMidi",
+    "access": null,
+    "description": "Creates and sends MIDI data to the user.",
+    "lineNumber": 279,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 42,
+    "kind": "method",
+    "name": "outputFinishCallback",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#outputFinishCallback",
+    "access": null,
+    "description": "Callback that runs when output panel is finished rendering.\nPrevents melody generation until the user enters a new progression.",
+    "lineNumber": 294,
+    "params": [
+      {
+        "nullable": null,
+        "types": [
+          "Object"
+        ],
+        "spread": false,
+        "optional": false,
+        "name": "event",
+        "description": "React event"
+      }
+    ]
+  },
+  {
+    "__docId__": 43,
+    "kind": "method",
+    "name": "render",
+    "memberof": "src/app-main.js~AutoComposerApp",
+    "generator": false,
+    "async": false,
+    "static": false,
+    "longname": "src/app-main.js~AutoComposerApp#render",
+    "access": null,
+    "description": null,
+    "lineNumber": 298,
+    "undocument": true,
+    "unknown": [
+      {
+        "tagName": "@_undocument",
+        "tagValue": ""
+      }
+    ],
+    "params": [],
+    "return": {
+      "types": [
+        "*"
+      ]
+    }
+  },
+  {
+    "__docId__": 45,
+    "kind": "external",
+    "name": "Infinity",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Infinity",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Infinity",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 46,
+    "kind": "external",
+    "name": "NaN",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/NaN",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~NaN",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 47,
+    "kind": "external",
+    "name": "undefined",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/undefined",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~undefined",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 48,
+    "kind": "external",
+    "name": "null",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/null",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~null",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 49,
+    "kind": "external",
+    "name": "Object",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Object",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 50,
+    "kind": "external",
+    "name": "object",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~object",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 51,
+    "kind": "external",
+    "name": "Function",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Function",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 52,
+    "kind": "external",
+    "name": "function",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~function",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 53,
+    "kind": "external",
+    "name": "Boolean",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Boolean",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Boolean",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 54,
+    "kind": "external",
+    "name": "boolean",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Boolean",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~boolean",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 55,
+    "kind": "external",
+    "name": "Symbol",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Symbol",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 56,
+    "kind": "external",
+    "name": "Error",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Error",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 57,
+    "kind": "external",
+    "name": "EvalError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/EvalError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~EvalError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 58,
+    "kind": "external",
+    "name": "InternalError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/InternalError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~InternalError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 59,
+    "kind": "external",
+    "name": "RangeError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RangeError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~RangeError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 60,
+    "kind": "external",
+    "name": "ReferenceError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ReferenceError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~ReferenceError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 61,
+    "kind": "external",
+    "name": "SyntaxError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SyntaxError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~SyntaxError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 62,
+    "kind": "external",
+    "name": "TypeError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypeError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~TypeError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 63,
+    "kind": "external",
+    "name": "URIError",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/URIError",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~URIError",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 64,
+    "kind": "external",
+    "name": "Number",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Number",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 65,
+    "kind": "external",
+    "name": "number",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~number",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 66,
+    "kind": "external",
+    "name": "Date",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Date",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 67,
+    "kind": "external",
+    "name": "String",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~String",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 68,
+    "kind": "external",
+    "name": "string",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~string",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 69,
+    "kind": "external",
+    "name": "RegExp",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~RegExp",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 70,
+    "kind": "external",
+    "name": "Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 71,
+    "kind": "external",
+    "name": "Int8Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int8Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Int8Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 72,
+    "kind": "external",
+    "name": "Uint8Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint8Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 73,
+    "kind": "external",
+    "name": "Uint8ClampedArray",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8ClampedArray",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint8ClampedArray",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 74,
+    "kind": "external",
+    "name": "Int16Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int16Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Int16Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 75,
+    "kind": "external",
+    "name": "Uint16Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint16Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint16Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 76,
+    "kind": "external",
+    "name": "Int32Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int32Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Int32Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 77,
+    "kind": "external",
+    "name": "Uint32Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint32Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Uint32Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 78,
+    "kind": "external",
+    "name": "Float32Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Float32Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 79,
+    "kind": "external",
+    "name": "Float64Array",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float64Array",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Float64Array",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 80,
+    "kind": "external",
+    "name": "Map",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Map",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 81,
+    "kind": "external",
+    "name": "Set",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Set",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 82,
+    "kind": "external",
+    "name": "WeakMap",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~WeakMap",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 83,
+    "kind": "external",
+    "name": "WeakSet",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakSet",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~WeakSet",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 84,
+    "kind": "external",
+    "name": "ArrayBuffer",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~ArrayBuffer",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 85,
+    "kind": "external",
+    "name": "DataView",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/DataView",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~DataView",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 86,
+    "kind": "external",
+    "name": "JSON",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~JSON",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 87,
+    "kind": "external",
+    "name": "Promise",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Promise",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 88,
+    "kind": "external",
+    "name": "Generator",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Generator",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Generator",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 89,
+    "kind": "external",
+    "name": "GeneratorFunction",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/GeneratorFunction",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~GeneratorFunction",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 90,
+    "kind": "external",
+    "name": "Reflect",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Reflect",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 91,
+    "kind": "external",
+    "name": "Proxy",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy",
+    "memberof": "BuiltinExternal/ECMAScriptExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/ECMAScriptExternal.js~Proxy",
+    "access": null,
+    "description": "",
+    "lineNumber": 193,
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 93,
+    "kind": "external",
+    "name": "CanvasRenderingContext2D",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~CanvasRenderingContext2D",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 94,
+    "kind": "external",
+    "name": "DocumentFragment",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/DocumentFragment",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~DocumentFragment",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 95,
+    "kind": "external",
+    "name": "Element",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/Element",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~Element",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 96,
+    "kind": "external",
+    "name": "Event",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/Event",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~Event",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 97,
+    "kind": "external",
+    "name": "Node",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/Node",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~Node",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 98,
+    "kind": "external",
+    "name": "NodeList",
+    "externalLink": "https://developer.mozilla.org/en-US/docs/Web/API/NodeList",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~NodeList",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 99,
+    "kind": "external",
+    "name": "XMLHttpRequest",
+    "externalLink": "https://developer.mozilla.org/en/docs/Web/API/XMLHttpRequest",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~XMLHttpRequest",
+    "access": null,
+    "description": "",
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 100,
+    "kind": "external",
+    "name": "AudioContext",
+    "externalLink": "https://developer.mozilla.org/en/docs/Web/API/AudioContext",
+    "memberof": "BuiltinExternal/WebAPIExternal.js",
+    "static": true,
+    "longname": "BuiltinExternal/WebAPIExternal.js~AudioContext",
+    "access": null,
+    "description": "",
+    "lineNumber": 34,
+    "builtinExternal": true
+  },
+  {
+    "__docId__": 101,
+    "kind": "testFile",
+    "name": "test/test.js",
+    "content": "",
+    "static": true,
+    "longname": "test/test.js",
+    "access": null,
+    "description": null,
+    "lineNumber": 1
+  }
+]
